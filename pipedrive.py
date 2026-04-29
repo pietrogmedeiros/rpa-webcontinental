@@ -32,17 +32,27 @@ def run() -> Path:
         page = context.new_page()
 
         try:
-            # ── 1. Login ──────────────────────────────────────────────────────
-            logger.info("Abrindo página de login...")
-            page.goto(f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/auth/login", wait_until="networkidle")
+         # Aguarda a página carregar completamente
+page.wait_for_load_state("domcontentloaded")
+time.sleep(2)
 
-            page.fill('input[name="login"]', PIPEDRIVE_EMAIL)
-            page.fill('input[name="password"]', PIPEDRIVE_PASSWORD)
-            page.click('button[type="submit"]')
+# Preenche email
+page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
+time.sleep(0.5)
 
-            # Aguarda redirecionamento pós-login
-            page.wait_for_url(f"**/{PIPEDRIVE_DOMAIN}.pipedrive.com/**", timeout=30_000)
-            logger.info("Login efetuado com sucesso.")
+# Preenche senha
+page.locator('input[name="password"], input[type="password"]').first.fill(PIPEDRIVE_PASSWORD)
+time.sleep(0.5)
+
+# Clica no botão de login (tenta múltiplos seletores)
+try:
+    page.locator('button[type="submit"]').click(timeout=5_000)
+except PlaywrightTimeout:
+    try:
+        page.locator('button:has-text("Log in"), button:has-text("Entrar"), button:has-text("Sign in")').first.click(timeout=5_000)
+    except PlaywrightTimeout:
+        # Fallback: pressiona Enter no campo de senha
+        page.locator('input[name="password"], input[type="password"]').first.press("Enter")
 
             # ── 2. Ir para Negócios (Deals) ───────────────────────────────────
             page.goto(f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/deals", wait_until="networkidle")
