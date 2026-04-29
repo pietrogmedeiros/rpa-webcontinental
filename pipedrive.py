@@ -17,49 +17,40 @@ PIPEDRIVE_FILTER_URL = os.environ.get(
     "https://webcontinentalb2b.pipedrive.com/deals/pipeline/1/filter/358?quickFilter=none"
 )
 
-# Todos os possíveis botões de fechar cookie banner
-COOKIE_SELECTORS = [
-    'button:has-text("Accept All Cookies")',
-    'button:has-text("Allow All")',
-    'button:has-text("Confirm My Choices")',
-    'button:has-text("Aceitar todos")',
-    'button:has-text("Aceitar")',
-    '#onetrust-accept-btn-handler',
-    '.onetrust-accept-btn-handler',
-    '.save-preference-btn-handler',
-]
+COOKIE_JS = """
+() => {
+    const texts = [
+        'Allow All', 'Accept All Cookies', 'Confirm My Choices',
+        'Aceitar todos', 'Aceitar', 'Accept All'
+    ];
+    const allButtons = Array.from(document.querySelectorAll('button'));
+    for (const text of texts) {
+        const btn = allButtons.find(b => b.textContent.trim().includes(text));
+        if (btn) {
+            btn.click();
+            return 'clicked: ' + text;
+        }
+    }
+    return null;
+}
+"""
 
 
-def _dismiss_cookies(page, wait_seconds: int = 4):
-    """Aguarda e fecha qualquer banner de cookies."""
+def _dismiss_cookies(page, wait_seconds: int = 3):
+    """Fecha o banner de cookies via JavaScript (funciona em shadow DOM)."""
     time.sleep(wait_seconds)
-    dismissed = False
-    for selector in COOKIE_SELECTORS:
-        try:
-            el = page.locator(selector).first
-            if el.is_visible(timeout=2_000):
-                el.click(timeout=3_000)
-                logger.info(f"Cookie banner fechado: {selector}")
-                time.sleep(1.5)
-                dismissed = True
-                break
-        except Exception:
-            continue
-
-    # Tenta uma segunda vez caso tenha múltiplos banners
-    if dismissed:
-        for selector in COOKIE_SELECTORS:
-            try:
-                el = page.locator(selector).first
-                if el.is_visible(timeout=1_500):
-                    el.click(timeout=3_000)
-                    logger.info(f"Cookie banner secundário fechado: {selector}")
-                    time.sleep(1)
-                    break
-            except Exception:
-                continue
-    else:
-        logger.info("Nenhum banner de cookies encontrado.")
+    try:
+        result = page.evaluate(COOKIE_JS)
+        if result:
+            logger.info(f"Cookie banner fechado via JS: {result}")
+            time.sleep(1.5)
+            # Segunda passagem caso tenha múltiplos banners
+            page.evaluate(COOKIE_JS)
+            time.sleep(1)
+        else:
+            logger.info("Nenhum banner de cookies encontrado.")
+    except Exception as e:
+        logger.warning(f"Erro ao fechar cookie banner: {e}")
 
 
 def run() -> Path:
@@ -82,7 +73,6 @@ def run() -> Path:
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
-
             _dismiss_cookies(page, wait_seconds=3)
 
             page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
@@ -95,7 +85,6 @@ def run() -> Path:
                 'button[type="submit"]',
                 'button:has-text("Log in")',
                 'button:has-text("Entrar")',
-                'button:has-text("Sign in")',
             ]:
                 try:
                     page.locator(selector).first.click(timeout=4_000)
@@ -116,9 +105,13 @@ def run() -> Path:
             except Exception:
                 pass
 
-            # Aguarda SPA carregar + fecha cookie banner com espera longa
-            _dismiss_cookies(page, wait_seconds=6)
-            logger.info("Página com filtro carregada e cookies dispensados.")
+            # Aguarda SPA + fecha cookies via JS
+            _dismiss_cookies(page, wait_seconds=7)
+            logger.info("Página com filtro carregada.")
+
+            # Screenshot para confirmar que a página carregou corretamente
+            page.screenshot(path=str(DOWNLOAD_DIR / "debug_after_filter.png"))
+            logger.info("Screenshot de debug salvo.")
 
             # ── 3. Clicar no botão "..." (três pontos) ────────────────────────
             logger.info("Abrindo menu de três pontos...")
