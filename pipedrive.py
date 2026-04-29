@@ -30,32 +30,41 @@ def run() -> Path:
         try:
             # ── 1. Login ──────────────────────────────────────────────────────
             logger.info("Abrindo página de login...")
-            page.goto(f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/auth/login", wait_until="domcontentloaded")
+            page.goto(
+                f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/auth/login",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
             time.sleep(3)
 
-            # Preenche email
             page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
             time.sleep(0.5)
-
-            # Preenche senha
             page.locator('input[name="password"], input[type="password"]').first.fill(PIPEDRIVE_PASSWORD)
             time.sleep(0.5)
 
-            # Tenta clicar no botão de submit
-            try:
-                page.locator('button[type="submit"]').click(timeout=5_000)
-            except PlaywrightTimeout:
+            # Tenta clicar no botão — fallback para Enter
+            submitted = False
+            for selector in ['button[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Entrar")']:
                 try:
-                    page.locator('button:has-text("Log in"), button:has-text("Entrar"), button:has-text("Sign in")').first.click(timeout=5_000)
+                    page.locator(selector).first.click(timeout=4_000)
+                    submitted = True
+                    break
                 except PlaywrightTimeout:
-                    page.locator('input[type="password"]').first.press("Enter")
+                    continue
+            if not submitted:
+                page.locator('input[type="password"]').first.press("Enter")
 
-            # Aguarda redirecionamento pós-login
             page.wait_for_url(f"**/{PIPEDRIVE_DOMAIN}.pipedrive.com/**", timeout=30_000)
             logger.info("Login efetuado com sucesso.")
 
             # ── 2. Ir para Negócios ───────────────────────────────────────────
-            page.goto(f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/deals", wait_until="networkidle")
+            logger.info("Navegando para Negócios...")
+            page.goto(
+                f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/deals",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            time.sleep(5)  # aguarda JS da SPA carregar
             logger.info("Página de Negócios carregada.")
 
             # ── 3. Aplicar filtro ─────────────────────────────────────────────
@@ -69,8 +78,12 @@ def run() -> Path:
 
         except Exception as exc:
             screenshot = DOWNLOAD_DIR / "error_screenshot.png"
-            page.screenshot(path=str(screenshot))
-            logger.error(f"Erro durante o RPA: {exc}. Screenshot salvo em {screenshot}")
+            try:
+                page.screenshot(path=str(screenshot))
+                logger.error(f"Screenshot salvo em {screenshot}")
+            except Exception:
+                pass
+            logger.error(f"Erro durante o RPA: {exc}")
             raise
         finally:
             context.close()
@@ -79,33 +92,81 @@ def run() -> Path:
 
 def _apply_filter(page, filter_name: str):
     logger.info(f"Aplicando filtro: {filter_name}")
-    try:
-        page.locator('[data-test="filter-button"], [aria-label*="filtro"], [aria-label*="filter"]').first.click(timeout=10_000)
-    except PlaywrightTimeout:
-        page.locator('button:has-text("Filtro"), button:has-text("Filter")').first.click()
 
-    time.sleep(1)
-    filter_item = page.locator(f'text="{filter_name}"').first
-    filter_item.wait_for(timeout=15_000)
-    filter_item.click()
-    page.wait_for_load_state("networkidle")
+    # Tenta abrir o seletor de filtros
+    filter_opened = False
+    for selector in [
+        '[data-test="filter-button"]',
+        '[aria-label*="filtro"]',
+        '[aria-label*="filter"]',
+        'button:has-text("Filtro")',
+        'button:has-text("Filter")',
+    ]:
+        try:
+            page.locator(selector).first.click(timeout=5_000)
+            filter_opened = True
+            break
+        except PlaywrightTimeout:
+            continue
+
+    if not filter_opened:
+        raise Exception("Não foi possível abrir o seletor de filtros.")
+
+    time.sleep(1.5)
+
+    # Clica no filtro pelo nome
+    try:
+        page.locator(f'text="{filter_name}"').first.click(timeout=10_000)
+    except PlaywrightTimeout:
+        # Tenta sem aspas (match parcial)
+        page.locator(f'text={filter_name}').first.click(timeout=10_000)
+
+    time.sleep(3)
     logger.info("Filtro aplicado.")
 
 
 def _export_csv(page) -> Path:
     logger.info("Iniciando exportação CSV...")
-    try:
-        page.locator('[data-test="more-options"], button[aria-label*="ações"], button[aria-label*="mais"]').first.click(timeout=8_000)
-    except PlaywrightTimeout:
-        page.locator('button:has-text("Exportar"), button:has-text("Export")').first.click()
 
-    time.sleep(0.8)
-
-    with page.expect_download(timeout=60_000) as download_info:
+    # Abre menu de mais opções
+    menu_opened = False
+    for selector in [
+        '[data-test="more-options"]',
+        'button[aria-label*="ações"]',
+        'button[aria-label*="mais"]',
+        'button[aria-label*="more"]',
+        '[data-icon="kebab-menu"]',
+        'button:has-text("...")',
+    ]:
         try:
-            page.locator('text="Exportar dados", text="Export data", text="Exportar CSV"').first.click()
-        except Exception:
-            page.locator('[data-test="export-button"]').click()
+            page.locator(selector).first.click(timeout=4_000)
+            menu_opened = True
+            break
+        except PlaywrightTimeout:
+            continue
+
+    time.sleep(1)
+
+    # Clica em exportar
+    with page.expect_download(timeout=60_000) as download_info:
+        export_clicked = False
+        for selector in [
+            'text="Exportar dados"',
+            'text="Export data"',
+            'text="Exportar CSV"',
+            'text="Export CSV"',
+            '[data-test="export-button"]',
+            'button:has-text("Exportar")',
+        ]:
+            try:
+                page.locator(selector).first.click(timeout=4_000)
+                export_clicked = True
+                break
+            except PlaywrightTimeout:
+                continue
+
+        if not export_clicked:
+            raise Exception("Não foi possível encontrar o botão de exportar.")
 
     download = download_info.value
     dest = DOWNLOAD_DIR / download.suggested_filename
