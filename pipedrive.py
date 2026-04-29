@@ -9,13 +9,36 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_DIR = Path("/app/downloads")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-PIPEDRIVE_EMAIL    = os.environ["PIPEDRIVE_EMAIL"]
-PIPEDRIVE_PASSWORD = os.environ["PIPEDRIVE_PASSWORD"]
-PIPEDRIVE_DOMAIN   = os.environ.get("PIPEDRIVE_DOMAIN", "webcontinentalb2b")
+PIPEDRIVE_EMAIL      = os.environ["PIPEDRIVE_EMAIL"]
+PIPEDRIVE_PASSWORD   = os.environ["PIPEDRIVE_PASSWORD"]
+PIPEDRIVE_DOMAIN     = os.environ.get("PIPEDRIVE_DOMAIN", "webcontinentalb2b")
 PIPEDRIVE_FILTER_URL = os.environ.get(
     "PIPEDRIVE_FILTER_URL",
-    f"https://{os.environ.get('PIPEDRIVE_DOMAIN', 'webcontinentalb2b')}.pipedrive.com/deals/pipeline/1/filter/358?quickFilter=none"
+    "https://webcontinentalb2b.pipedrive.com/deals/pipeline/1/filter/358?quickFilter=none"
 )
+
+
+def _dismiss_cookies(page):
+    """Fecha qualquer banner de cookies que esteja bloqueando a tela."""
+    for selector in [
+        'button:has-text("Accept All Cookies")',
+        'button:has-text("Allow All")',
+        'button:has-text("Aceitar todos")',
+        'button:has-text("Aceitar")',
+        '#onetrust-accept-btn-handler',
+        '.onetrust-accept-btn-handler',
+        'button[id*="accept"]',
+    ]:
+        try:
+            el = page.locator(selector).first
+            if el.is_visible(timeout=2_000):
+                el.click(timeout=3_000)
+                logger.info(f"Banner de cookies fechado: {selector}")
+                time.sleep(1)
+                return
+        except Exception:
+            continue
+    logger.info("Nenhum banner de cookies encontrado.")
 
 
 def run() -> Path:
@@ -39,6 +62,9 @@ def run() -> Path:
                 timeout=30_000,
             )
             time.sleep(3)
+
+            # Fecha cookie banner se aparecer no login
+            _dismiss_cookies(page)
 
             page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
             time.sleep(0.5)
@@ -65,7 +91,7 @@ def run() -> Path:
             logger.info("Login efetuado com sucesso.")
 
             # ── 2. Navegar direto para o filtro ───────────────────────────────
-            logger.info(f"Navegando para o filtro: {PIPEDRIVE_FILTER_URL}")
+            logger.info(f"Navegando para o filtro...")
             try:
                 page.goto(PIPEDRIVE_FILTER_URL, wait_until="commit", timeout=30_000)
             except Exception:
@@ -73,6 +99,10 @@ def run() -> Path:
 
             time.sleep(6)
             logger.info("Página com filtro carregada.")
+
+            # Fecha cookie banner se aparecer aqui também
+            _dismiss_cookies(page)
+            time.sleep(2)
 
             # ── 3. Clicar no botão "..." (três pontos) ────────────────────────
             logger.info("Abrindo menu de três pontos...")
@@ -82,14 +112,16 @@ def run() -> Path:
                 'button[aria-label="Mais opções"]',
                 'button[aria-label="More options"]',
                 '[data-test="kebab-menu"]',
-                'button:has-text("...")',
-                # botão com ícone de 3 pontos no canto superior direito
                 'button[class*="kebab"]',
-                'button[class*="more"]',
-                'button[class*="dots"]',
+                # Pipedrive usa SVG com 3 pontos — tenta pelo ícone
+                'button svg[data-icon="ellipsis"]',
+                'button:has(svg[data-icon="ellipsis"])',
+                # Tenta pelo último botão da toolbar (geralmente é o ...)
+                '[class*="toolbar"] button:last-child',
+                '[class*="header"] button:last-child',
             ]:
                 try:
-                    el = page.locator(selector).last  # pega o último (canto direito)
+                    el = page.locator(selector).last
                     if el.is_visible(timeout=3_000):
                         el.click(timeout=5_000)
                         three_dots_clicked = True
@@ -99,17 +131,17 @@ def run() -> Path:
                     continue
 
             if not three_dots_clicked:
-                # Fallback: tira screenshot para debug e loga os botões
-                page.screenshot(path=str(DOWNLOAD_DIR / "debug_before_menu.png"), full_page=False)
+                # Screenshot + log de botões para debug
+                page.screenshot(path=str(DOWNLOAD_DIR / "debug_before_menu.png"))
                 buttons = page.locator("button").all()
                 logger.info(f"Botões na página ({len(buttons)}):")
                 for i, btn in enumerate(buttons[:30]):
                     try:
                         txt = btn.inner_text().strip()
                         aria = btn.get_attribute("aria-label") or ""
-                        dt = btn.get_attribute("data-test") or ""
-                        cls = btn.get_attribute("class") or ""
-                        logger.info(f"  [{i}] texto='{txt}' aria='{aria}' data-test='{dt}' class='{cls[:50]}'")
+                        dt   = btn.get_attribute("data-test") or ""
+                        cls  = (btn.get_attribute("class") or "")[:60]
+                        logger.info(f"  [{i}] texto='{txt}' aria='{aria}' data-test='{dt}' class='{cls}'")
                     except Exception:
                         pass
                 raise Exception("Não foi possível abrir o menu de três pontos. Veja debug_before_menu.png")
@@ -127,11 +159,12 @@ def run() -> Path:
                     'text="Exportar dados"',
                     'text="Export data"',
                     '[data-test="export-button"]',
+                    'button:has-text("Exportar")',
                 ]:
                     try:
                         page.locator(selector).first.click(timeout=5_000)
                         export_clicked = True
-                        logger.info(f"Exportar clicado com seletor: {selector}")
+                        logger.info(f"Exportar clicado: {selector}")
                         break
                     except PlaywrightTimeout:
                         continue
@@ -142,7 +175,7 @@ def run() -> Path:
             download = download_info.value
             dest = DOWNLOAD_DIR / download.suggested_filename
             download.save_as(str(dest))
-            logger.info(f"Download concluído: {dest}")
+            logger.info(f"✅ Download concluído: {dest}")
             return dest
 
         except Exception as exc:
