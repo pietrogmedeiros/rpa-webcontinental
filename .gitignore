@@ -1,0 +1,12 @@
+# Credenciais — NUNCA commitar
+.env
+credentials/
+*.json
+
+# Downloads gerados pelo RPA
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
