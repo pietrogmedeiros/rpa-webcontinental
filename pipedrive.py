@@ -44,7 +44,12 @@ def run() -> Path:
 
             # Tenta clicar no botão — fallback para Enter
             submitted = False
-            for selector in ['button[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Entrar")']:
+            for selector in [
+                'button[type="submit"]',
+                'button:has-text("Log in")',
+                'button:has-text("Entrar")',
+                'button:has-text("Sign in")',
+            ]:
                 try:
                     page.locator(selector).first.click(timeout=4_000)
                     submitted = True
@@ -57,14 +62,24 @@ def run() -> Path:
             page.wait_for_url(f"**/{PIPEDRIVE_DOMAIN}.pipedrive.com/**", timeout=30_000)
             logger.info("Login efetuado com sucesso.")
 
-            # ── 2. Ir para Negócios ───────────────────────────────────────────
+            # ── 2. Navegar para Negócios (SPA — ignora ERR_ABORTED) ───────────
             logger.info("Navegando para Negócios...")
-            page.goto(
-                f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/deals",
-                wait_until="domcontentloaded",
-                timeout=30_000,
-            )
-            time.sleep(5)  # aguarda JS da SPA carregar
+            try:
+                page.goto(
+                    f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/deals",
+                    wait_until="commit",
+                    timeout=30_000,
+                )
+            except Exception:
+                pass  # SPA aborta a navegação mas continua renderizando
+
+            time.sleep(6)  # aguarda SPA renderizar completamente
+
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except Exception:
+                pass
+
             logger.info("Página de Negócios carregada.")
 
             # ── 3. Aplicar filtro ─────────────────────────────────────────────
@@ -77,8 +92,8 @@ def run() -> Path:
             return downloaded_file
 
         except Exception as exc:
-            screenshot = DOWNLOAD_DIR / "error_screenshot.png"
             try:
+                screenshot = DOWNLOAD_DIR / "error_screenshot.png"
                 page.screenshot(path=str(screenshot))
                 logger.error(f"Screenshot salvo em {screenshot}")
             except Exception:
@@ -118,7 +133,6 @@ def _apply_filter(page, filter_name: str):
     try:
         page.locator(f'text="{filter_name}"').first.click(timeout=10_000)
     except PlaywrightTimeout:
-        # Tenta sem aspas (match parcial)
         page.locator(f'text={filter_name}').first.click(timeout=10_000)
 
     time.sleep(3)
@@ -129,7 +143,6 @@ def _export_csv(page) -> Path:
     logger.info("Iniciando exportação CSV...")
 
     # Abre menu de mais opções
-    menu_opened = False
     for selector in [
         '[data-test="more-options"]',
         'button[aria-label*="ações"]',
@@ -140,14 +153,13 @@ def _export_csv(page) -> Path:
     ]:
         try:
             page.locator(selector).first.click(timeout=4_000)
-            menu_opened = True
             break
         except PlaywrightTimeout:
             continue
 
     time.sleep(1)
 
-    # Clica em exportar
+    # Clica em exportar e aguarda download
     with page.expect_download(timeout=60_000) as download_info:
         export_clicked = False
         for selector in [
