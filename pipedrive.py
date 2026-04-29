@@ -17,28 +17,49 @@ PIPEDRIVE_FILTER_URL = os.environ.get(
     "https://webcontinentalb2b.pipedrive.com/deals/pipeline/1/filter/358?quickFilter=none"
 )
 
+# Todos os possíveis botões de fechar cookie banner
+COOKIE_SELECTORS = [
+    'button:has-text("Accept All Cookies")',
+    'button:has-text("Allow All")',
+    'button:has-text("Confirm My Choices")',
+    'button:has-text("Aceitar todos")',
+    'button:has-text("Aceitar")',
+    '#onetrust-accept-btn-handler',
+    '.onetrust-accept-btn-handler',
+    '.save-preference-btn-handler',
+]
 
-def _dismiss_cookies(page):
-    """Fecha qualquer banner de cookies que esteja bloqueando a tela."""
-    for selector in [
-        'button:has-text("Accept All Cookies")',
-        'button:has-text("Allow All")',
-        'button:has-text("Aceitar todos")',
-        'button:has-text("Aceitar")',
-        '#onetrust-accept-btn-handler',
-        '.onetrust-accept-btn-handler',
-        'button[id*="accept"]',
-    ]:
+
+def _dismiss_cookies(page, wait_seconds: int = 4):
+    """Aguarda e fecha qualquer banner de cookies."""
+    time.sleep(wait_seconds)
+    dismissed = False
+    for selector in COOKIE_SELECTORS:
         try:
             el = page.locator(selector).first
             if el.is_visible(timeout=2_000):
                 el.click(timeout=3_000)
-                logger.info(f"Banner de cookies fechado: {selector}")
-                time.sleep(1)
-                return
+                logger.info(f"Cookie banner fechado: {selector}")
+                time.sleep(1.5)
+                dismissed = True
+                break
         except Exception:
             continue
-    logger.info("Nenhum banner de cookies encontrado.")
+
+    # Tenta uma segunda vez caso tenha múltiplos banners
+    if dismissed:
+        for selector in COOKIE_SELECTORS:
+            try:
+                el = page.locator(selector).first
+                if el.is_visible(timeout=1_500):
+                    el.click(timeout=3_000)
+                    logger.info(f"Cookie banner secundário fechado: {selector}")
+                    time.sleep(1)
+                    break
+            except Exception:
+                continue
+    else:
+        logger.info("Nenhum banner de cookies encontrado.")
 
 
 def run() -> Path:
@@ -61,10 +82,8 @@ def run() -> Path:
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
-            time.sleep(3)
 
-            # Fecha cookie banner se aparecer no login
-            _dismiss_cookies(page)
+            _dismiss_cookies(page, wait_seconds=3)
 
             page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
             time.sleep(0.5)
@@ -91,18 +110,15 @@ def run() -> Path:
             logger.info("Login efetuado com sucesso.")
 
             # ── 2. Navegar direto para o filtro ───────────────────────────────
-            logger.info(f"Navegando para o filtro...")
+            logger.info("Navegando para o filtro...")
             try:
                 page.goto(PIPEDRIVE_FILTER_URL, wait_until="commit", timeout=30_000)
             except Exception:
-                pass  # SPA aborta mas continua carregando
+                pass
 
-            time.sleep(6)
-            logger.info("Página com filtro carregada.")
-
-            # Fecha cookie banner se aparecer aqui também
-            _dismiss_cookies(page)
-            time.sleep(2)
+            # Aguarda SPA carregar + fecha cookie banner com espera longa
+            _dismiss_cookies(page, wait_seconds=6)
+            logger.info("Página com filtro carregada e cookies dispensados.")
 
             # ── 3. Clicar no botão "..." (três pontos) ────────────────────────
             logger.info("Abrindo menu de três pontos...")
@@ -113,10 +129,7 @@ def run() -> Path:
                 'button[aria-label="More options"]',
                 '[data-test="kebab-menu"]',
                 'button[class*="kebab"]',
-                # Pipedrive usa SVG com 3 pontos — tenta pelo ícone
-                'button svg[data-icon="ellipsis"]',
                 'button:has(svg[data-icon="ellipsis"])',
-                # Tenta pelo último botão da toolbar (geralmente é o ...)
                 '[class*="toolbar"] button:last-child',
                 '[class*="header"] button:last-child',
             ]:
@@ -131,20 +144,19 @@ def run() -> Path:
                     continue
 
             if not three_dots_clicked:
-                # Screenshot + log de botões para debug
                 page.screenshot(path=str(DOWNLOAD_DIR / "debug_before_menu.png"))
                 buttons = page.locator("button").all()
                 logger.info(f"Botões na página ({len(buttons)}):")
                 for i, btn in enumerate(buttons[:30]):
                     try:
-                        txt = btn.inner_text().strip()
+                        txt  = btn.inner_text().strip()
                         aria = btn.get_attribute("aria-label") or ""
                         dt   = btn.get_attribute("data-test") or ""
                         cls  = (btn.get_attribute("class") or "")[:60]
                         logger.info(f"  [{i}] texto='{txt}' aria='{aria}' data-test='{dt}' class='{cls}'")
                     except Exception:
                         pass
-                raise Exception("Não foi possível abrir o menu de três pontos. Veja debug_before_menu.png")
+                raise Exception("Não foi possível abrir o menu de três pontos.")
 
             time.sleep(1)
 
