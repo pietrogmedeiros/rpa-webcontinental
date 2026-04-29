@@ -17,40 +17,50 @@ PIPEDRIVE_FILTER_URL = os.environ.get(
     "https://webcontinentalb2b.pipedrive.com/deals/pipeline/1/filter/358?quickFilter=none"
 )
 
+# Cookies do OneTrust que indicam "usuário já aceitou" — evita o banner
+ONETRUST_COOKIES = [
+    {
+        "name": "OptanonAlertBoxClosed",
+        "value": "2024-01-01T00:00:00.000Z",
+        "domain": ".pipedrive.com",
+        "path": "/",
+    },
+    {
+        "name": "OptanonConsent",
+        "value": "isGpcEnabled=0&datestamp=Mon+Jan+01+2024+00%3A00%3A00+GMT&version=202301.1.0&isIABGlobal=false&hosts=&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1&AwaitingReconsent=false",
+        "domain": ".pipedrive.com",
+        "path": "/",
+    },
+]
+
 COOKIE_JS = """
 () => {
-    const texts = [
-        'Allow All', 'Accept All Cookies', 'Confirm My Choices',
-        'Aceitar todos', 'Aceitar', 'Accept All'
-    ];
+    const texts = ['Allow All', 'Accept All Cookies', 'Confirm My Choices', 'Aceitar todos'];
     const allButtons = Array.from(document.querySelectorAll('button'));
     for (const text of texts) {
         const btn = allButtons.find(b => b.textContent.trim().includes(text));
-        if (btn) {
-            btn.click();
-            return 'clicked: ' + text;
-        }
+        if (btn) { btn.click(); return 'clicked: ' + text; }
     }
     return null;
 }
 """
 
 
-def _dismiss_cookies(page, wait_seconds: int = 3):
-    """Fecha o banner de cookies via JavaScript (funciona em shadow DOM)."""
-    time.sleep(wait_seconds)
+def _inject_onetrust_cookies(context):
+    """Injeta cookies que simulam aceitação prévia do OneTrust."""
+    context.add_cookies(ONETRUST_COOKIES)
+    logger.info("Cookies OneTrust injetados.")
+
+
+def _dismiss_cookies_js(page):
+    """Fallback: fecha banner via JS caso ainda apareça."""
     try:
         result = page.evaluate(COOKIE_JS)
         if result:
-            logger.info(f"Cookie banner fechado via JS: {result}")
+            logger.info(f"Banner fechado via JS: {result}")
             time.sleep(1.5)
-            # Segunda passagem caso tenha múltiplos banners
-            page.evaluate(COOKIE_JS)
-            time.sleep(1)
-        else:
-            logger.info("Nenhum banner de cookies encontrado.")
-    except Exception as e:
-        logger.warning(f"Erro ao fechar cookie banner: {e}")
+    except Exception:
+        pass
 
 
 def run() -> Path:
@@ -63,6 +73,10 @@ def run() -> Path:
             accept_downloads=True,
             viewport={"width": 1280, "height": 900},
         )
+
+        # Injeta cookies ANTES de qualquer navegação
+        _inject_onetrust_cookies(context)
+
         page = context.new_page()
 
         try:
@@ -73,7 +87,8 @@ def run() -> Path:
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
-            _dismiss_cookies(page, wait_seconds=3)
+            time.sleep(2)
+            _dismiss_cookies_js(page)  # fallback
 
             page.locator('input[name="login"], input[type="email"]').first.fill(PIPEDRIVE_EMAIL)
             time.sleep(0.5)
@@ -98,6 +113,9 @@ def run() -> Path:
             page.wait_for_url(f"**/{PIPEDRIVE_DOMAIN}.pipedrive.com/**", timeout=30_000)
             logger.info("Login efetuado com sucesso.")
 
+            # Re-injeta cookies após login (sessão nova)
+            _inject_onetrust_cookies(context)
+
             # ── 2. Navegar direto para o filtro ───────────────────────────────
             logger.info("Navegando para o filtro...")
             try:
@@ -105,13 +123,24 @@ def run() -> Path:
             except Exception:
                 pass
 
-            # Aguarda SPA + fecha cookies via JS
-            _dismiss_cookies(page, wait_seconds=7)
-            logger.info("Página com filtro carregada.")
+            time.sleep(7)
+            _dismiss_cookies_js(page)  # fallback
+            time.sleep(2)
 
-            # Screenshot para confirmar que a página carregou corretamente
             page.screenshot(path=str(DOWNLOAD_DIR / "debug_after_filter.png"))
             logger.info("Screenshot de debug salvo.")
+
+            # Loga botões para confirmar que é a página certa
+            buttons = page.locator("button").all()
+            logger.info(f"Botões na página ({len(buttons)}):")
+            for i, btn in enumerate(buttons[:20]):
+                try:
+                    txt  = btn.inner_text().strip()
+                    aria = btn.get_attribute("aria-label") or ""
+                    dt   = btn.get_attribute("data-test") or ""
+                    logger.info(f"  [{i}] texto='{txt}' aria='{aria}' data-test='{dt}'")
+                except Exception:
+                    pass
 
             # ── 3. Clicar no botão "..." (três pontos) ────────────────────────
             logger.info("Abrindo menu de três pontos...")
@@ -124,7 +153,7 @@ def run() -> Path:
                 'button[class*="kebab"]',
                 'button:has(svg[data-icon="ellipsis"])',
                 '[class*="toolbar"] button:last-child',
-                '[class*="header"] button:last-child',
+                '[class*="list-header"] button:last-child',
             ]:
                 try:
                     el = page.locator(selector).last
@@ -137,19 +166,10 @@ def run() -> Path:
                     continue
 
             if not three_dots_clicked:
-                page.screenshot(path=str(DOWNLOAD_DIR / "debug_before_menu.png"))
-                buttons = page.locator("button").all()
-                logger.info(f"Botões na página ({len(buttons)}):")
-                for i, btn in enumerate(buttons[:30]):
-                    try:
-                        txt  = btn.inner_text().strip()
-                        aria = btn.get_attribute("aria-label") or ""
-                        dt   = btn.get_attribute("data-test") or ""
-                        cls  = (btn.get_attribute("class") or "")[:60]
-                        logger.info(f"  [{i}] texto='{txt}' aria='{aria}' data-test='{dt}' class='{cls}'")
-                    except Exception:
-                        pass
-                raise Exception("Não foi possível abrir o menu de três pontos.")
+                raise Exception(
+                    "Não foi possível abrir o menu de três pontos. "
+                    "Verifique debug_after_filter.png e os botões logados acima."
+                )
 
             time.sleep(1)
 
